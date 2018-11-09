@@ -6,6 +6,10 @@
 #define MQTT_TOPIC_STATE "light/bed"
 #define MQTT_TOPIC_SET "light/bed/set"
 
+#define MQTT_TOPIC_STATUS "light/bed/status"
+#define MQTT_STATUS_PAYLOAD_ON "Online"
+#define MQTT_STATUS_PAYLOAD_OFF "Offline"
+
 #define PIN_RED 12
 #define PIN_GREEN 13
 #define PIN_BLUE 14

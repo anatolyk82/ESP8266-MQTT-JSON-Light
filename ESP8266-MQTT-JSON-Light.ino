@@ -54,6 +54,7 @@ void saveConfigCallback () {
   shouldSaveConfig = true;
 }
 
+
 void readConfigurationFile() {
   //read configuration from FS json
   Serial.println("mounting FS...");
@@ -98,6 +99,7 @@ void readConfigurationFile() {
   Serial.println(mqtt_password);
 }
 
+
 void writeConfigurationFile() {
   Serial.println("saving config");
   DynamicJsonBuffer jsonBuffer;
@@ -119,6 +121,7 @@ void writeConfigurationFile() {
   configFile.close();
   shouldSaveConfig = false;
 }
+
 
 void createCustomWiFiManager() {
   // The extra parameters to be configured
@@ -175,6 +178,7 @@ void createCustomWiFiManager() {
   strcpy(mqtt_password, custom_mqtt_password.getValue());
 }
 
+
 void setColor(int red, int green, int blue) {
   analogWrite(PIN_RED, red);
   analogWrite(PIN_GREEN, green);
@@ -188,6 +192,7 @@ void setColor(int red, int green, int blue) {
   Serial.print(" blue:");
   Serial.println(blue);
 }
+
 
 void setup() {
   pinMode(CONFIG_TRIGGER_PIN, INPUT);
@@ -219,6 +224,8 @@ void setup() {
   int p = atoi(mqtt_port);
   mqttClient.setServer(mqtt_server, p);
   mqttClient.setCredentials(mqtt_login, mqtt_password);
+  mqttClient.setKeepAlive(30);
+  mqttClient.setWill(MQTT_TOPIC_STATUS, 1, true, MQTT_STATUS_PAYLOAD_OFF); //topic, QoS, retain, payload
 
   mqttClient.onConnect(onMqttConnect);
   mqttClient.onDisconnect(onMqttDisconnect);
@@ -234,6 +241,7 @@ void setup() {
   timer.setInterval(INTERVAL_PUBLISH_STATE, publishState);
 }
 
+
 void onMqttConnect(bool sessionPresent) {
   Serial.println("MQTT: Connected");
   Serial.print("MQTT: Session present: ");
@@ -243,8 +251,13 @@ void onMqttConnect(bool sessionPresent) {
   Serial.println(MQTT_TOPIC_SET);
   mqttClient.subscribe(MQTT_TOPIC_SET, 0);
 
+  Serial.print("MQTT: Publish online status: ");
+  Serial.println(MQTT_TOPIC_STATUS);
+  mqttClient.publish(MQTT_TOPIC_STATUS, 1, true, MQTT_STATUS_PAYLOAD_ON);
+
   publishState();
 }
+
 
 void onMqttDisconnect(AsyncMqttClientDisconnectReason reason) {
   Serial.println();
@@ -272,6 +285,7 @@ void onMqttDisconnect(AsyncMqttClientDisconnectReason reason) {
   }
 }
 
+
 void publishState() {
   const int BUFFER_SIZE = JSON_OBJECT_SIZE(20);
   StaticJsonBuffer<BUFFER_SIZE> jsonBuffer;
@@ -293,6 +307,7 @@ void publishState() {
 
   mqttClient.publish(MQTT_TOPIC_STATE, 0, true, buffer);
 }
+
 
 void onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProperties properties, size_t len, size_t index, size_t total) {
   Serial.println();
