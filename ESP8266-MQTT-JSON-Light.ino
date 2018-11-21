@@ -1,27 +1,27 @@
 #include <FS.h>                   //this needs to be first, or it all crashes and burns... (from Adafruit)
-
 #include <ESP8266WiFi.h>          //https://github.com/esp8266/Arduino
-
 #include <DNSServer.h>
 #include <ESP8266WebServer.h>
 #include <WiFiManager.h>          // https://github.com/tzapu/WiFiManager
-
 #include <ArduinoJson.h>          // https://github.com/bblanchon/ArduinoJson (ver: 5.x)
-
 #include <AsyncMqttClient.h>      // https://github.com/marvinroger/async-mqtt-client + (https://github.com/me-no-dev/ESPAsyncTCP)
-
 #include <SimpleTimer.h>          // https://github.com/schinken/SimpleTimer
-
 #include "config.h"
 
 
-//define your default values here, if there are different values in config.json, they are overwritten.
-//length should be max size + 1
+// Default values can be defined here, if there are different values in config.json, they are overwritten.
 char mqtt_server[40];
 char mqtt_port[6] = "1883";
 char mqtt_login[64];
 char mqtt_password[64];
-char mqtt_client_id[64];
+char mqtt_client_id[36];
+
+// Light RGB state by default
+int colorRED = 255;
+int colorGREEN = 255;
+int colorBLUE = 255;
+int brightness = 1023;
+bool isON = false;
 
 // Flag for saving data
 bool shouldSaveConfig = false;
@@ -29,14 +29,6 @@ bool shouldSaveConfig = false;
 // MQTT client
 AsyncMqttClient mqttClient;
 
-// Light state
-int colorRED = 255;
-int colorGREEN = 255;
-int colorBLUE = 255;
-int brightness = 1023;
-bool isON = false;
-
-unsigned long INTERVAL_PUBLISH_STATE = 600000;// 10min
 SimpleTimer timer;
 
 // Global variables for fade transition
@@ -49,7 +41,7 @@ int stepR, stepG, stepB;
 int redVal, grnVal, bluVal;
 
 
-//callback notifying us of the need to save config
+// Callback notifying us of the need to save config
 void saveConfigCallback () {
   Serial.println("Should save config");
   shouldSaveConfig = true;
@@ -58,15 +50,14 @@ void saveConfigCallback () {
 
 void readConfigurationFile() {
   //read configuration from FS json
-  Serial.println("mounting FS...");
+  Serial.println("Mounting FS...");
   if (SPIFFS.begin()) {
     Serial.println("mounted file system");
     if (SPIFFS.exists("/config.json")) {
       //file exists, reading and loading
-      Serial.println("reading config file");
+      Serial.println("Reading config file");
       File configFile = SPIFFS.open("/config.json", "r");
       if (configFile) {
-        Serial.println("opened config file");
         size_t size = configFile.size();
         // Allocate a buffer to store contents of the file.
         std::unique_ptr<char[]> buf(new char[size]);
@@ -76,7 +67,7 @@ void readConfigurationFile() {
         JsonObject& json = jsonBuffer.parseObject(buf.get());
         json.printTo(Serial);
         if (json.success()) {
-          Serial.println("\nparsed json");
+          Serial.println("JSON config parsed");
 
           strcpy(mqtt_server, json["mqtt_server"]);
           strcpy(mqtt_port, json["mqtt_port"]);
@@ -85,17 +76,17 @@ void readConfigurationFile() {
           strcpy(mqtt_client_id, json["mqtt_client_id"]);
 
         } else {
-          Serial.println("failed to load json config");
+          Serial.println("Failed to load json config");
         }
       }
     } else {
-      Serial.println("/config.json not found");
+      Serial.println("File /config.json not found");
     }
   } else {
-    Serial.println("failed to mount FS");
+    Serial.println("Failed to mount FS");
   }
 
-  Serial.println("Read from the config file:");
+  Serial.println("Read data from the config file:");
   Serial.printf("  mqtt server: %s\n", mqtt_server);
   Serial.printf("  mqtt port: %s\n", mqtt_port);
   Serial.printf("  mqtt login: %s\n", mqtt_login);
@@ -105,7 +96,7 @@ void readConfigurationFile() {
 
 
 void writeConfigurationFile() {
-  Serial.println("saving config");
+  Serial.println("Saving configuration");
   DynamicJsonBuffer jsonBuffer;
   JsonObject& json = jsonBuffer.createObject();
   json["mqtt_server"] = mqtt_server;
@@ -118,7 +109,7 @@ void writeConfigurationFile() {
   if (!configFile) {
     Serial.println("Failed to open config file for writing");
   } else {
-    Serial.println("Save data in config file");
+    Serial.println("Save data in the config file /config.json");
   }
 
   json.prettyPrintTo(Serial);
@@ -129,7 +120,7 @@ void writeConfigurationFile() {
 }
 
 
-void createCustomWiFiManager() {
+void createCustomWiFiManager(bool _resetSettings) {
   // The extra parameters to be configured
   WiFiManagerParameter custom_text("<p>MQTT Server</p>");
   WiFiManagerParameter custom_mqtt_server("mqtt_server", "MQTT server", mqtt_server, 40);
@@ -139,14 +130,14 @@ void createCustomWiFiManager() {
   WiFiManagerParameter custom_mqtt_client_id("mqtt_client_id", "MQTT client id", mqtt_client_id, 64);
   
 
-  //WiFiManager
-  //Local intialization. Once its business is done, there is no need to keep it around
+  // WiFiManager
+  // Local intialization. Once its business is done, there is no need to keep it around
   WiFiManager wifiManager;
 
-  //set config save notify callback
+  // Set config save notify callback
   wifiManager.setSaveConfigCallback(saveConfigCallback);
 
-  //add all custom parameters
+  // Add all custom parameters
   wifiManager.addParameter(&custom_text);
   wifiManager.addParameter(&custom_mqtt_server);
   wifiManager.addParameter(&custom_mqtt_port);
@@ -154,21 +145,22 @@ void createCustomWiFiManager() {
   wifiManager.addParameter(&custom_mqtt_password);
   wifiManager.addParameter(&custom_mqtt_client_id);
 
-  //reset settings - for testing
-  //wifiManager.resetSettings();
+  // Reset settings if needed
+  if (_resetSettings) {
+    wifiManager.resetSettings();
+  }
 
   //set minimu quality of signal so it ignores AP's under that quality
   //defaults to 8%
   wifiManager.setMinimumSignalQuality();
 
-  //sets timeout until configuration portal gets turned off
-  //useful to make it all retry or go to sleep
-  //in seconds
+  // Sets timeout until configuration portal gets turned off
+  // useful to make it all retry or go to sleep in seconds
   wifiManager.setTimeout(120);
 
-  //fetches ssid and pass and tries to connect
-  //if it does not connect it starts an access point with the specified name
-  //and goes into a blocking loop awaiting configuration
+  // Fetches ssid and pass and tries to connect
+  // if it does not connect it starts an access point with the specified name
+  // and goes into a blocking loop awaiting configuration
   if (!wifiManager.autoConnect(WIFI_AP_NAME, WIFI_AP_PASS)) {
     Serial.println("failed to connect and hit timeout");
     delay(3000);
@@ -177,10 +169,10 @@ void createCustomWiFiManager() {
     delay(5000);
   }
 
-  //if you get here you have connected to the WiFi
+  // If you get here you have connected to the WiFi
   Serial.println("Connected to WiFi");
 
-  //read updated parameters
+  // Read updated parameters
   strcpy(mqtt_server, custom_mqtt_server.getValue());
   strcpy(mqtt_port, custom_mqtt_port.getValue());
   strcpy(mqtt_login, custom_mqtt_login.getValue());
@@ -193,7 +185,6 @@ void setColor(int red, int green, int blue) {
   analogWrite(PIN_RED, red);
   analogWrite(PIN_GREEN, green);
   analogWrite(PIN_BLUE, blue);
-
   Serial.printf("Set output color: red=%d green=%d blue=%d\n", red, green, blue);
 }
 
@@ -230,14 +221,14 @@ void setup() {
 
   readConfigurationFile();
 
-  createCustomWiFiManager();
+  createCustomWiFiManager(false);
 
-  //save the custom parameters to FS
+  // Save the custom parameters to FS
   if (shouldSaveConfig) {
     writeConfigurationFile();
   }
 
-  //Configure MQTT
+  // Configure MQTT
   int p = atoi(mqtt_port);
   mqttClient.setServer(mqtt_server, p);
   mqttClient.setCredentials(mqtt_login, mqtt_password);
@@ -257,7 +248,7 @@ void setup() {
   Serial.println("MQTT: Connecting to broker...");
   mqttClient.connect();
 
-  //Publish state periodicly
+  // Publish state periodicly
   timer.setInterval(INTERVAL_PUBLISH_STATE, publishState);
 
   //WiFi.setSleepMode(WIFI_NONE_SLEEP);//TODO: need to try this
@@ -312,7 +303,7 @@ void publishState() {
   const int BUFFER_SIZE = JSON_OBJECT_SIZE(20);
   StaticJsonBuffer<BUFFER_SIZE> jsonBuffer;
 
-  //Light state: state, color, brightness
+  // Light state: state, color, brightness
   JsonObject& root = jsonBuffer.createObject();
   root["state"] = (isON) ? "ON" : "OFF";
   JsonObject& color = root.createNestedObject("color");
@@ -321,6 +312,7 @@ void publishState() {
   color["b"] = colorBLUE;
   root["brightness"] = brightness;
 
+  // Additional parameters: ip-address, mac-address, RSSI, uptime
   // IP-address
   char ip[16];
   memset(ip, 0, 18);
@@ -346,9 +338,7 @@ void publishState() {
   char buffer[root.measureLength() + 1];
   root.printTo(buffer, sizeof(buffer));
 
-  Serial.println();
-  Serial.print("MQTT: Publish state:");
-  Serial.println(buffer);
+  Serial.printf("\nMQTT: Publish state: %s\n", buffer);
 
   mqttClient.publish(MQTT_TOPIC_STATE, 0, true, buffer);
 }
@@ -361,7 +351,6 @@ void onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProperties 
   Serial.printf("  qos: %d\n", properties.qos);
   Serial.printf("  dup: %d\n", properties.dup);
   Serial.printf("  retain: %d\n", properties.retain);
-
 
   Serial.print("  payload: ");
   DynamicJsonBuffer jsonBuffer;
@@ -423,7 +412,7 @@ void loop() {
   if ( digitalRead(CONFIG_TRIGGER_PIN) == LOW ) {
     //TODO: this part has to be fixed
     mqttClient.disconnect(true);
-    createCustomWiFiManager();
+    createCustomWiFiManager(true);
     mqttClient.connect();
   }
 
@@ -431,7 +420,7 @@ void loop() {
 
   //-------------------------
   if (startFade) {
-    Serial.print("start fade: brightness:");
+    Serial.println("Start the fade effect");
 
     // If we don't want to fade, skip it.
     if (transitionTime == 0) {
@@ -472,8 +461,7 @@ void loop() {
         int realBlue = map(bluVal, 0, 255, 0, brightness);
         setColor(realRed, realGreen, realBlue);
 
-        Serial.print("Loop count: ");
-        Serial.println(loopCount);
+        Serial.printf("Loop count: %d\n", loopCount);
         loopCount++;
       }
       else {

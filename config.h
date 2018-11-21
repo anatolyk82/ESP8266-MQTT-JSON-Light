@@ -17,4 +17,6 @@
 #define WIFI_AP_NAME "LED_bed"
 #define WIFI_AP_PASS "123456"
 
+#define INTERVAL_PUBLISH_STATE 600000 // Interval to send statistics to the mqtt broker
+
 #endif
