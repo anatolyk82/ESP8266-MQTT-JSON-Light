@@ -1,4 +1,4 @@
-#include <FS.h>                   //this needs to be first, or it all crashes and burns...
+#include <FS.h>                   //this needs to be first, or it all crashes and burns... (from Adafruit)
 
 #include <ESP8266WiFi.h>          //https://github.com/esp8266/Arduino
 
@@ -6,9 +6,9 @@
 #include <ESP8266WebServer.h>
 #include <WiFiManager.h>          // https://github.com/tzapu/WiFiManager
 
-#include <ArduinoJson.h>          // https://github.com/bblanchon/ArduinoJson
+#include <ArduinoJson.h>          // https://github.com/bblanchon/ArduinoJson (ver: 5.x)
 
-#include <AsyncMqttClient.h>      // https://github.com/marvinroger/async-mqtt-client - Async MQTT client
+#include <AsyncMqttClient.h>      // https://github.com/marvinroger/async-mqtt-client + (https://github.com/me-no-dev/ESPAsyncTCP)
 
 #include <SimpleTimer.h>          // https://github.com/schinken/SimpleTimer
 
@@ -21,6 +21,7 @@ char mqtt_server[40];
 char mqtt_port[6] = "1883";
 char mqtt_login[64];
 char mqtt_password[64];
+char mqtt_client_id[64];
 
 // Flag for saving data
 bool shouldSaveConfig = false;
@@ -81,6 +82,7 @@ void readConfigurationFile() {
           strcpy(mqtt_port, json["mqtt_port"]);
           strcpy(mqtt_login, json["mqtt_login"]);
           strcpy(mqtt_password, json["mqtt_password"]);
+          strcpy(mqtt_client_id, json["mqtt_client_id"]);
 
         } else {
           Serial.println("failed to load json config");
@@ -93,10 +95,12 @@ void readConfigurationFile() {
     Serial.println("failed to mount FS");
   }
 
-  Serial.println(mqtt_server);
-  Serial.println(mqtt_port);
-  Serial.println(mqtt_login);
-  Serial.println(mqtt_password);
+  Serial.println("Read from the config file:");
+  Serial.printf("  mqtt server: %s\n", mqtt_server);
+  Serial.printf("  mqtt port: %s\n", mqtt_port);
+  Serial.printf("  mqtt login: %s\n", mqtt_login);
+  Serial.printf("  mqtt password: %s\n", mqtt_password);
+  Serial.printf("  mqtt client id: %s\n", mqtt_client_id);
 }
 
 
@@ -108,16 +112,18 @@ void writeConfigurationFile() {
   json["mqtt_port"] = mqtt_port;
   json["mqtt_login"] = mqtt_login;
   json["mqtt_password"] = mqtt_password;
+  json["mqtt_client_id"] = mqtt_client_id;
 
   File configFile = SPIFFS.open("/config.json", "w");
   if (!configFile) {
-    Serial.println("failed to open config file for writing");
+    Serial.println("Failed to open config file for writing");
   } else {
     Serial.println("Save data in config file");
   }
 
   json.prettyPrintTo(Serial);
   json.printTo(configFile);
+  Serial.println();
   configFile.close();
   shouldSaveConfig = false;
 }
@@ -130,6 +136,8 @@ void createCustomWiFiManager() {
   WiFiManagerParameter custom_mqtt_port("mqtt_port", "MQTT port", mqtt_port, 5);
   WiFiManagerParameter custom_mqtt_login("mqtt_login", "MQTT login", mqtt_login, 64);
   WiFiManagerParameter custom_mqtt_password("mqtt_password", "MQTT password", mqtt_password, 64);
+  WiFiManagerParameter custom_mqtt_client_id("mqtt_client_id", "MQTT client id", mqtt_client_id, 64);
+  
 
   //WiFiManager
   //Local intialization. Once its business is done, there is no need to keep it around
@@ -144,6 +152,7 @@ void createCustomWiFiManager() {
   wifiManager.addParameter(&custom_mqtt_port);
   wifiManager.addParameter(&custom_mqtt_login);
   wifiManager.addParameter(&custom_mqtt_password);
+  wifiManager.addParameter(&custom_mqtt_client_id);
 
   //reset settings - for testing
   //wifiManager.resetSettings();
@@ -176,6 +185,7 @@ void createCustomWiFiManager() {
   strcpy(mqtt_port, custom_mqtt_port.getValue());
   strcpy(mqtt_login, custom_mqtt_login.getValue());
   strcpy(mqtt_password, custom_mqtt_password.getValue());
+  strcpy(mqtt_client_id, custom_mqtt_client_id.getValue());
 }
 
 
@@ -184,13 +194,20 @@ void setColor(int red, int green, int blue) {
   analogWrite(PIN_GREEN, green);
   analogWrite(PIN_BLUE, blue);
 
-  Serial.print("Set output color: ");
-  Serial.print("red:");
-  Serial.print(red);
-  Serial.print(" green:");
-  Serial.print(green);
-  Serial.print(" blue:");
-  Serial.println(blue);
+  Serial.printf("Set output color: red=%d green=%d blue=%d\n", red, green, blue);
+}
+
+
+char *uptime(unsigned long milli) {
+  static char _return[32];
+  unsigned long secs=milli/1000, mins=secs/60;
+  unsigned int hours=mins/60, days=hours/24;
+  milli-=secs*1000;
+  secs-=mins*60;
+  mins-=hours*60;
+  hours-=days*24;
+  sprintf(_return,"%dT%2.2d:%2.2d:%2.2d.%3.3d", (byte)days, (byte)hours, (byte)mins, (byte)secs, (int)milli);
+  return _return;
 }
 
 
@@ -227,18 +244,23 @@ void setup() {
   mqttClient.setKeepAlive(30);
   mqttClient.setWill(MQTT_TOPIC_STATUS, 1, true, MQTT_STATUS_PAYLOAD_OFF); //topic, QoS, retain, payload
 
+  String string_client_id(mqtt_client_id);
+  string_client_id.trim();
+  if (string_client_id != String("")) {
+    mqttClient.setClientId(mqtt_client_id);
+  }
+
   mqttClient.onConnect(onMqttConnect);
   mqttClient.onDisconnect(onMqttDisconnect);
   mqttClient.onMessage(onMqttMessage);
-  //mqttClient.onSubscribe(onMqttSubscribe);
-  //mqttClient.onUnsubscribe(onMqttUnsubscribe);
-  //mqttClient.onPublish(onMqttPublish);
 
   Serial.println("MQTT: Connecting to broker...");
   mqttClient.connect();
 
   //Publish state periodicly
   timer.setInterval(INTERVAL_PUBLISH_STATE, publishState);
+
+  //WiFi.setSleepMode(WIFI_NONE_SLEEP);//TODO: need to try this
 }
 
 
@@ -290,6 +312,7 @@ void publishState() {
   const int BUFFER_SIZE = JSON_OBJECT_SIZE(20);
   StaticJsonBuffer<BUFFER_SIZE> jsonBuffer;
 
+  //Light state: state, color, brightness
   JsonObject& root = jsonBuffer.createObject();
   root["state"] = (isON) ? "ON" : "OFF";
   JsonObject& color = root.createNestedObject("color");
@@ -297,6 +320,28 @@ void publishState() {
   color["g"] = colorGREEN;
   color["b"] = colorBLUE;
   root["brightness"] = brightness;
+
+  // IP-address
+  char ip[16];
+  memset(ip, 0, 18);
+  sprintf(ip, "%s", WiFi.localIP().toString().c_str());
+  root["ip"] = ip;
+
+  // MAC address
+  uint8_t macAddr[6];
+  WiFi.macAddress(macAddr);
+  char mac[18];
+  memset(mac, 0, 18);
+  sprintf(mac, "%02X:%02X:%02X:%02X:%02X:%02X", macAddr[0], macAddr[1], macAddr[2], macAddr[3], macAddr[4], macAddr[5]);
+  root["mac"] = mac;
+
+  //RSSI
+  char rssi[8];
+  sprintf(rssi, "%d", WiFi.RSSI());
+  root["rssi"] = rssi;
+
+  //  Uptime
+  root["uptime"] = uptime( millis() );
   
   char buffer[root.measureLength() + 1];
   root.printTo(buffer, sizeof(buffer));
@@ -312,20 +357,11 @@ void publishState() {
 void onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProperties properties, size_t len, size_t index, size_t total) {
   Serial.println();
   Serial.println("MQTT: Message received.");
-  Serial.print("  topic: ");
-  Serial.println(topic);
-  Serial.print("  qos: ");
-  Serial.println(properties.qos);
-  Serial.print("  dup: ");
-  Serial.println(properties.dup);
-  Serial.print("  retain: ");
-  Serial.println(properties.retain);
-  Serial.print("  len: ");
-  Serial.println(len);
-  Serial.print("  index: ");
-  Serial.println(index);
-  Serial.print("  total: ");
-  Serial.println(total);
+  Serial.printf("  topic: %s\n", topic);
+  Serial.printf("  qos: %d\n", properties.qos);
+  Serial.printf("  dup: %d\n", properties.dup);
+  Serial.printf("  retain: %d\n", properties.retain);
+
 
   Serial.print("  payload: ");
   DynamicJsonBuffer jsonBuffer;
@@ -338,15 +374,13 @@ void onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProperties 
       const char* state = json["state"];
       String stringState(state);
       String stringOn("ON");
-      Serial.print("  state: ");
-      Serial.println(state);
+      Serial.printf("  state: %s\n", state);
       if (stringState == stringOn) {
         isON = true;
         
         if (json.containsKey("brightness")) {
           brightness = json["brightness"];
-          Serial.print("  brightness: ");
-          Serial.println(brightness);
+          Serial.printf("  brightness: %d\n", brightness);
         }
 
         if (json.containsKey("color")) {
@@ -357,8 +391,7 @@ void onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProperties 
 
         if (json.containsKey("transition")) {
           transitionTime = json["transition"];
-          Serial.print("  transition: ");
-          Serial.println(transitionTime);
+          Serial.printf("  transition: %d\n", transitionTime);
           brightness = 1023; //NOTE: With a transition brightness goes from min to max
           startFade = true;
         } else {
@@ -388,6 +421,7 @@ void onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProperties 
 void loop() {
   
   if ( digitalRead(CONFIG_TRIGGER_PIN) == LOW ) {
+    //TODO: this part has to be fixed
     mqttClient.disconnect(true);
     createCustomWiFiManager();
     mqttClient.connect();
