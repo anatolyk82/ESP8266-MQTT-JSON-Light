@@ -156,17 +156,13 @@ void createCustomWiFiManager(bool _resetSettings) {
 
   // Sets timeout until configuration portal gets turned off
   // useful to make it all retry or go to sleep in seconds
-  wifiManager.setTimeout(120);
+  wifiManager.setTimeout(60);
 
   // Fetches ssid and pass and tries to connect
   // if it does not connect it starts an access point with the specified name
   // and goes into a blocking loop awaiting configuration
   if (!wifiManager.autoConnect(WIFI_AP_NAME, WIFI_AP_PASS)) {
-    Serial.println("failed to connect and hit timeout");
-    delay(3000);
-    //reset and try again, or maybe put it to deep sleep
-    ESP.reset();
-    delay(5000);
+    Serial.println("Failed to connect to AP and hit timeout");
   }
 
   // If you get here you have connected to the WiFi
@@ -245,8 +241,32 @@ void setup() {
   mqttClient.onDisconnect(onMqttDisconnect);
   mqttClient.onMessage(onMqttMessage);
 
-  Serial.println("MQTT: Connecting to broker...");
-  mqttClient.connect();
+  /* Connect the MQTT client to the broker */
+  int8_t attemptToConnectToMQTT = 0;
+  Serial.println("MQTT: Connect to the broker");
+  while ( (mqttClient.connected() == false) && (attemptToConnectToMQTT < 5) ) {
+    if (WiFi.isConnected()) {
+      Serial.printf("MQTT: Attempt %d. Connecting to broker [%s:%d]: login: [%s] password: [%s] ... \n", attemptToConnectToMQTT, mqtt_server, p, mqtt_login, mqtt_password );
+      mqttClient.connect();
+    } else {
+      //attemptToConnectToMQTT = 0;
+      Serial.println("MQTT: WiFi is not connected. Try to reconnect WiFi.");
+      WiFi.reconnect();
+    }
+    delay(3000);
+    attemptToConnectToMQTT += 1;
+  }
+
+  /* If there is still no connection here, restart the device */  
+  if (!WiFi.isConnected()) {
+    Serial.println("setup(): WiFi is not connected. Reset the device to initiate connection again.");
+    ESP.restart();
+  }
+
+  if (!mqttClient.connected()) {
+    Serial.println("setup(): The device is not connected to MQTT. Reset the device to initiate connection again.");
+    ESP.restart();
+  }
 
   // Publish state periodicly
   timer.setInterval(INTERVAL_PUBLISH_STATE, publishState);
@@ -408,6 +428,11 @@ void onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProperties 
 
 
 void loop() {
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("loop(): WiFi is not connected. Reset the device to initiate connection again.");
+    ESP.restart();
+  }
   
   if ( digitalRead(CONFIG_TRIGGER_PIN) == LOW ) {
     //TODO: this part has to be fixed
